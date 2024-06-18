@@ -170,39 +170,17 @@ class HomeFragment : Fragment() {
         }
     }
 
-    private fun convertInputTensor(bitmap: Bitmap): ByteBuffer {
-        val inputTensor = ByteBuffer.allocateDirect(300 * 300 * 3).order(ByteOrder.nativeOrder())
-
-        // Resize the bitmap to 300x300
-        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, 300, 300, true)
-
-        // Convert the bitmap to ByteBuffer
-        val intValues = IntArray(300 * 300)
-        resizedBitmap.getPixels(intValues, 0, 300, 0, 0, 300, 300)
-        var pixel = 0
-        for (i in 0 until 300) {
-            for (j in 0 until 300) {
-                val value = intValues[pixel++]
-                inputTensor.put((value shr 16 and 0xFF).toByte()) // Red
-                inputTensor.put((value shr 8 and 0xFF).toByte())  // Green
-                inputTensor.put((value and 0xFF).toByte())       // Blue
-            }
-        }
-
-        return inputTensor;
-    }
-
     private fun runModel(bitmap: Bitmap): List<DetectionResult> {
         // Inference time is the difference between the system time at the start and finish of the
         // process
         var inferenceTime = SystemClock.uptimeMillis()
 
         // Preprocesar la imagen utilizando TensorImage e ImageProcessor
-        val tensorImage = TensorImage(DataType.UINT8)
+        val tensorImage = TensorImage.fromBitmap(bitmap)
         val imageProcessor = ImageProcessor.Builder()
             .add(ResizeOp(300, 300, ResizeOp.ResizeMethod.BILINEAR))  // Adjust dimensions as needed
             .build()
-        tensorImage.load(bitmap)
+
         val processedTensorImage = imageProcessor.process(tensorImage)
         val inputBuffer = processedTensorImage.buffer
 
