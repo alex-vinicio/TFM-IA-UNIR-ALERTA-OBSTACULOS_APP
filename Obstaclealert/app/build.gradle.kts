@@ -35,6 +35,7 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        mlModelBinding = true
     }
 }
 
@@ -60,7 +61,7 @@ dependencies {
     implementation("androidx.camera:camera-video:$cameraxVersion")
     implementation("androidx.camera:camera-extensions:$cameraxVersion")
 
-    implementation("org.tensorflow:tensorflow-lite:+")
-    implementation("org.tensorflow:tensorflow-lite-support:0.3.1")
+    implementation ("org.tensorflow:tensorflow-lite-metadata:0.1.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.4.1")
 }

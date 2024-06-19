@@ -1,39 +1,36 @@
 package com.alex.obstaclealert.ui.home
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.Toast
-import androidx.camera.core.AspectRatio
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.Recorder
-import androidx.camera.video.VideoCapture
-import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.lifecycleScope
 import com.alex.obstaclealert.R
 import com.alex.obstaclealert.databinding.FragmentHomeBinding
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.nnapi.NnApiDelegate
@@ -42,11 +39,9 @@ import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.IOException
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 
+import com.alex.obstaclealert.ml.Model1
 
 class HomeFragment : Fragment() {
 
@@ -61,13 +56,18 @@ class HomeFragment : Fragment() {
             arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     }
 
-    private lateinit var previewView: PreviewView
+    private lateinit var previewView: ImageView
+    lateinit var textureView: TextureView
     private lateinit var overlayView: OverlayView
 
     private lateinit var buttonCapture: Button
-    private lateinit var videoCapture: VideoCapture<Recorder>
+    lateinit var cameraDevice: CameraDevice
     private lateinit var interpreter: Interpreter
     private lateinit var cameraExecutor: ExecutorService
+    lateinit var cameraManager: CameraManager
+    lateinit var bitmap:Bitmap
+
+    lateinit var handler: Handler
 
     private var associatedAxisLabels: List<String>? = null
 
@@ -76,8 +76,7 @@ class HomeFragment : Fragment() {
     private val requiredPermissions =
         arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
 
-    // This property is only valid between onCreateView and
-    // onDestroyView.
+    lateinit var model:Model1
     private val binding get() = _binding!!
 
     override fun onCreateView(
@@ -90,7 +89,10 @@ class HomeFragment : Fragment() {
         _binding = FragmentHomeBinding.inflate(inflater, container, false)
         val root: View = binding.root
 
-        previewView = root.findViewById(R.id.previewView)
+        model = Model1.newInstance(requireContext())
+        previewView = root.findViewById(R.id.imageView)
+        textureView = root.findViewById(R.id.textureView)
+
         overlayView = root.findViewById(R.id.overlay)
         buttonCapture = root.findViewById(R.id.button_capture)
 
@@ -104,12 +106,33 @@ class HomeFragment : Fragment() {
             )
         }
 
-        cameraExecutor = Executors.newSingleThreadExecutor()
+        val handlerThread = HandlerThread("videoThread")
+        handlerThread.start()
+        handler = Handler(handlerThread.looper)
+
         buttonCapture.setOnClickListener {
             startCamera()
             initializeInterpreter()
         }
 
+        textureView.surfaceTextureListener = object:TextureView.SurfaceTextureListener{
+            override fun onSurfaceTextureAvailable(p0: SurfaceTexture, p1: Int, p2: Int) {
+                startCamera()
+            }
+            override fun onSurfaceTextureSizeChanged(p0: SurfaceTexture, p1: Int, p2: Int) {
+            }
+
+            override fun onSurfaceTextureDestroyed(p0: SurfaceTexture): Boolean {
+                return false
+            }
+
+            override fun onSurfaceTextureUpdated(p0: SurfaceTexture) {
+                bitmap = textureView.bitmap!!
+                processImage(bitmap, previewView)
+            }
+        }
+
+        cameraManager = requireContext().getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
         return root
     }
@@ -122,8 +145,6 @@ class HomeFragment : Fragment() {
     }
 
     private fun initializeInterpreter() {
-        //val modelBuffer = loadModelFile("2.tflite")
-        val tfliteModel = FileUtil.loadMappedFile(requireContext(), "1.tflite")
 
         try {
             associatedAxisLabels = FileUtil.loadLabels(requireContext(), "labels.txt")
@@ -138,12 +159,6 @@ class HomeFragment : Fragment() {
             nnApiDelegate = NnApiDelegate()
             options.addDelegate(nnApiDelegate)
         }
-
-        try {
-            interpreter = Interpreter(tfliteModel, options)
-        }catch (e: Exception){
-            throw RuntimeException(e)
-        }
     }
 
     override fun onDestroyView() {
@@ -156,43 +171,12 @@ class HomeFragment : Fragment() {
         ContextCompat.checkSelfPermission(requireContext(), it) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun processImage(imageProxy: ImageProxy) {
-        lifecycleScope.launch {
-            withContext(Dispatchers.IO) {
-                try {
-                    val bitmap = imageProxy.toBitmap()
-                    val results = runModel(bitmap)
-                    overlayView.setResults(results)
-                } finally {
-                    imageProxy.close()
-                }
-            }
-        }
+    private fun processImage(bitmap: Bitmap, imageView:ImageView ) {
+        val results = runModel(bitmap, imageView)
+        overlayView.setResults(results)
     }
 
-    private fun convertInputTensor(bitmap: Bitmap): ByteBuffer {
-        val inputTensor = ByteBuffer.allocateDirect(300 * 300 * 3).order(ByteOrder.nativeOrder())
-
-        // Resize the bitmap to 300x300
-        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, 300, 300, true)
-
-        // Convert the bitmap to ByteBuffer
-        val intValues = IntArray(300 * 300)
-        resizedBitmap.getPixels(intValues, 0, 300, 0, 0, 300, 300)
-        var pixel = 0
-        for (i in 0 until 300) {
-            for (j in 0 until 300) {
-                val value = intValues[pixel++]
-                inputTensor.put((value shr 16 and 0xFF).toByte()) // Red
-                inputTensor.put((value shr 8 and 0xFF).toByte())  // Green
-                inputTensor.put((value and 0xFF).toByte())       // Blue
-            }
-        }
-
-        return inputTensor;
-    }
-
-    private fun runModel(bitmap: Bitmap): List<DetectionResult> {
+    private fun runModel(bitmap: Bitmap, imageView: ImageView): List<DetectionResult> {
         // Inference time is the difference between the system time at the start and finish of the
         // process
         var inferenceTime = SystemClock.uptimeMillis()
@@ -204,115 +188,73 @@ class HomeFragment : Fragment() {
             .build()
         tensorImage.load(bitmap)
         val processedTensorImage = imageProcessor.process(tensorImage)
-        val inputBuffer = processedTensorImage.buffer
+        val inputBuffer = processedTensorImage
 
-        // Crear el buffer de salida
-        val maxDetections = 1001
+        val outputs = model.process(inputBuffer)
+        val locations = outputs.locationsAsTensorBuffer.floatArray
+        val classes = outputs.classesAsTensorBuffer.floatArray
+        val scores = outputs.scoresAsTensorBuffer.floatArray
+        val numberOfDetections = outputs.numberOfDetectionsAsTensorBuffer.floatArray
 
-        // Tamaños de los buffers, ajusta según sea necesario
-        val numDetectionsSize = 4 * 1 // 1 detección, 4 bytes por float
-        val detectionBoxesSize = 4 * maxDetections * 4   // 10 detecciones, 4 coordenadas por caja, 4 bytes por float
-        val detectionClassesSize = 4 * maxDetections  // 10 detecciones, 4 bytes por float
-        val detectionScoresSize = 4 * maxDetections  // 10 detecciones, 4 bytes por float
+        var mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
-        // Crear los buffers para las salidas
-        val numDetectionsBuffer = ByteBuffer.allocateDirect(numDetectionsSize).order(ByteOrder.nativeOrder())
-        val detectionBoxesBuffer = ByteBuffer.allocateDirect(detectionBoxesSize).order(ByteOrder.nativeOrder())
-        val detectionClassesBuffer = ByteBuffer.allocateDirect(detectionClassesSize).order(ByteOrder.nativeOrder())
-        val detectionScoresBuffer = ByteBuffer.allocateDirect(detectionScoresSize).order(ByteOrder.nativeOrder())
-
-        val outputMap: MutableMap<Int, Any> = HashMap()
-        outputMap[0] = detectionBoxesBuffer
-        outputMap[1] = detectionClassesBuffer
-        outputMap[2] = detectionScoresBuffer
-        outputMap[3] = numDetectionsBuffer
-
-        // Ejecutar el modelo
-        interpreter.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputMap)
-
-        val numDetectionsArray = FloatArray(1)
-        numDetectionsBuffer.rewind()
-        numDetectionsBuffer.asFloatBuffer().get(numDetectionsArray)
-        val numDetections = numDetectionsArray[0].toInt()
-
-        val detectionBoxesArray = Array(numDetections) { FloatArray(4) }
-        detectionBoxesBuffer.rewind()
-        val flattenedArray = FloatArray(numDetections * 4)
-        detectionBoxesBuffer.asFloatBuffer().get(flattenedArray)
-        for (i in 0 until numDetections) {
-            System.arraycopy(flattenedArray, i * 4, detectionBoxesArray[i], 0, 4)
-        }
-
-        val detectionClassesArray = FloatArray(numDetections)
-        detectionClassesBuffer.rewind()
-        detectionClassesBuffer.asFloatBuffer().get(detectionClassesArray)
-
-        val detectionScoresArray = FloatArray(numDetections)
-        detectionScoresBuffer.rewind()
-        detectionScoresBuffer.asFloatBuffer().get(detectionScoresArray)
-
-        // Crear el mapa de etiquetas si las etiquetas se cargaron correctamente
-        val labelMap = associatedAxisLabels?.mapIndexed { index, label -> index to label }?.toMap() ?: mapOf()
-
+        inferenceTime = SystemClock.uptimeMillis() - inferenceTime
         // Obtener las dimensiones de la vista de la cámara
-        val previewWidth = previewView.width.toFloat()
-        val previewHeight = previewView.height.toFloat()
+        val previewWidth = mutable.width
+        val previewHeight = mutable.height
 
         val results = parseResults(
-            detectionBoxesArray,
-            detectionClassesArray,
-            detectionScoresArray,
-            labelMap,
+            locations,
+            classes,
+            scores,
             previewWidth,
-            previewHeight
+            previewHeight,
+            inferenceTime
         )
-        inferenceTime = SystemClock.uptimeMillis() - inferenceTime
+
 
         //Log.d(TAG, "Timesnap results: $inferenceTime")
+        imageView.setImageBitmap(mutable)
         return (results)
     }
 
     private fun parseResults(
-        detectionBoxes: Array<FloatArray>,
+        locations: FloatArray,
         detectionClasses: FloatArray,
         detectionScores: FloatArray,
-        labelMap: Map<Int, String>,
-        previewWidth: Float,
-        previewHeight: Float
+        previewWidth: Int,
+        previewHeight: Int,
+        inferenceTime: Long
     ): List<DetectionResult> {
         val detectionResults = mutableListOf<DetectionResult>()
-
-        for (i in detectionBoxes.indices) {
+        var box = 0
+        for (i in detectionScores.indices) {
             val score = detectionScores[i]
-
             // Solo procesar detecciones con puntaje significativo (> 0)
             if (score > 0.60) {
-                val box = detectionBoxes[i]
-                val classIndex = detectionClasses[i].toInt()
-
-                if (box.size == 4) {
-                    val top = box[0] * previewHeight
-                    val left = box[1] * previewWidth
-                    val bottom = box[2] * previewHeight
-                    val right = box[3] * previewWidth
+                box = i
+                box *= 4
+                    val top = locations[box] * previewHeight
+                    val left = locations[box+1] *previewWidth
+                    val bottom = locations[box+2] * previewHeight
+                    val right = locations[box+3] * previewWidth
 
                     val location = RectF(left, top, right, bottom)
-                    val category = labelMap[classIndex] ?: "Unknown"
+                    val category = associatedAxisLabels?.get(detectionClasses[i].toInt()) ?: "Unknown"
 
-                    val detectionResult = DetectionResult(location, category, score)
+                    val detectionResult = DetectionResult(location, category, score, inferenceTime)
                     detectionResults.add(detectionResult)
-                }
             }
         }
-        Log.d(TAG, "Inference results: ${detectionResults.toString()}")
+        //Log.d(TAG, "Inference results: ${detectionResults.toString()}")
         return detectionResults
     }
-
 
     data class DetectionResult(
         val location: RectF,
         val category: String,
-        val score: Float
+        val score: Float,
+        val elapsedTime: Long
     )
 
     override fun onRequestPermissionsResult(
@@ -340,47 +282,38 @@ class HomeFragment : Fragment() {
         cameraExecutor.shutdown()
     }
 
-    private fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext())
+    @SuppressLint("MissingPermission")
+    fun startCamera(){
+        cameraManager.openCamera(cameraManager.cameraIdList[0], object: CameraDevice.StateCallback(){
+            override fun onOpened(p0: CameraDevice) {
+                cameraDevice = p0
 
-        cameraProviderFuture.addListener({
-            val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+                var surfaceTexture = textureView.surfaceTexture
+                var surface = Surface(surfaceTexture)
 
-            val preview = Preview.Builder()
-                .build()
-                .also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
+                var captureRequest = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                captureRequest.addTarget(surface)
 
-            val recorder = Recorder.Builder()
-                .setExecutor(cameraExecutor)
-                .build()
-            videoCapture = VideoCapture.withOutput(recorder)
-
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-            var imageAnalyzer = ImageAnalysis.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                //.setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                .build()
-                .also {
-                    it.setAnalyzer(cameraExecutor) { imageProxy ->
-                        processImage(imageProxy)
+                cameraDevice.createCaptureSession(listOf(surface), object: CameraCaptureSession.StateCallback(){
+                    override fun onConfigured(p0: CameraCaptureSession) {
+                        p0.setRepeatingRequest(captureRequest.build(), null, null)
                     }
-                }
-
-            try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalyzer)
-            } catch (exc: Exception) {
-                Log.e(TAG, "Use case binding failed", exc)
+                    override fun onConfigureFailed(p0: CameraCaptureSession) {
+                    }
+                }, handler)
             }
-        }, ContextCompat.getMainExecutor(requireContext()))
+
+            override fun onDisconnected(p0: CameraDevice) {
+
+            }
+
+            override fun onError(p0: CameraDevice, p1: Int) {
+
+            }
+        }, handler)
     }
 
-    public fun closeInterpreter(){
-        interpreter.close()
+    private fun closeInterpreter(){
         nnApiDelegate?.close()
     }
 }

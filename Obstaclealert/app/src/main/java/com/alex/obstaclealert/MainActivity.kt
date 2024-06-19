@@ -29,7 +29,7 @@ class MainActivity : AppCompatActivity() {
         binding.appBarMain.toolbar.setOnClickListener {  view ->
             Snackbar.make(view, "Replace with your own action", Snackbar.LENGTH_LONG)
                     .setAction("Action", null)
-                    .setAnchorView(R.id.previewView).show()
+                    .setAnchorView(R.id.imageView).show()
         }
         
         val drawerLayout: DrawerLayout = binding.drawerLayout
