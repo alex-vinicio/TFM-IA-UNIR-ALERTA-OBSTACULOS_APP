@@ -7,13 +7,24 @@
     tools:context=".ui.home.HomeFragment"
     tools:ignore="MissingClass">
 
-    <androidx.camera.view.PreviewView
-        android:id="@+id/previewView"
+    <TextureView
+        android:id="@+id/textureView"
         android:layout_width="412dp"
         android:layout_height="633dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         tools:ignore="MissingConstraints"
+        tools:layout_editor_absoluteY="45dp" />
+
+    <ImageView
+        android:id="@+id/imageView"
+        android:layout_width="412dp"
+        android:layout_height="633dp"
+        android:contentDescription="@string/todo"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        tools:ignore="MissingConstraints"
+        android:background="#000"
         tools:layout_editor_absoluteY="45dp" />
 
     <com.alex.obstaclealert.ui.home.OverlayView
@@ -35,7 +46,7 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.5"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/previewView"
+        app:layout_constraintTop_toBottomOf="@+id/imageView"
         tools:ignore="MissingConstraints" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
