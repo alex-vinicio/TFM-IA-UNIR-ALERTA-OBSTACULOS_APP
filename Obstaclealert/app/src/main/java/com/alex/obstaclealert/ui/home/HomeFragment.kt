@@ -5,6 +5,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
@@ -31,17 +34,21 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import com.alex.obstaclealert.R
 import com.alex.obstaclealert.databinding.FragmentHomeBinding
+import com.alex.obstaclealert.ml.Yolov5sFp16
+import com.alex.obstaclealert.ui.utils.Recognition
+import com.alex.obstaclealert.ui.utils.Yolov5TFLiteDetector
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.nnapi.NnApiDelegate
 import org.tensorflow.lite.support.common.FileUtil
+import org.tensorflow.lite.support.common.ops.NormalizeOp
 import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.ResizeOp
+import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
 import java.io.IOException
 import java.util.concurrent.ExecutorService
 
-import com.alex.obstaclealert.ml.Model1
 
 class HomeFragment : Fragment() {
 
@@ -76,8 +83,12 @@ class HomeFragment : Fragment() {
     private val requiredPermissions =
         arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
 
-    lateinit var model:Model1
+    lateinit var model:Yolov5sFp16
     private val binding get() = _binding!!
+
+    var yolov5TFLiteDetector: Yolov5TFLiteDetector? = null
+    var boxPaint: Paint = Paint()
+    var textPain: Paint = Paint()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -89,7 +100,7 @@ class HomeFragment : Fragment() {
         _binding = FragmentHomeBinding.inflate(inflater, container, false)
         val root: View = binding.root
 
-        model = Model1.newInstance(requireContext())
+        model = Yolov5sFp16.newInstance(requireContext())
         previewView = root.findViewById(R.id.imageView)
         textureView = root.findViewById(R.id.textureView)
 
@@ -111,13 +122,24 @@ class HomeFragment : Fragment() {
         handler = Handler(handlerThread.looper)
 
         buttonCapture.setOnClickListener {
-            startCamera()
-            initializeInterpreter()
+           // startCamera()
         }
+
+        yolov5TFLiteDetector = Yolov5TFLiteDetector()
+        yolov5TFLiteDetector!!.modelFile = "yolov5s-fp16.tflite"
+        yolov5TFLiteDetector!!.initialModel(requireContext())
+        boxPaint.strokeWidth = 5f
+        boxPaint.style = Paint.Style.STROKE
+        boxPaint.color = Color.RED
+
+        textPain.textSize = 50f
+        textPain.color = Color.GREEN
+        textPain.style = Paint.Style.FILL
 
         textureView.surfaceTextureListener = object:TextureView.SurfaceTextureListener{
             override fun onSurfaceTextureAvailable(p0: SurfaceTexture, p1: Int, p2: Int) {
                 startCamera()
+                //initializeInterpreter()
             }
             override fun onSurfaceTextureSizeChanged(p0: SurfaceTexture, p1: Int, p2: Int) {
             }
@@ -128,7 +150,8 @@ class HomeFragment : Fragment() {
 
             override fun onSurfaceTextureUpdated(p0: SurfaceTexture) {
                 bitmap = textureView.bitmap!!
-                processImage(bitmap, previewView)
+                //processImage(bitmap, previewView)
+                processImage2(bitmap, previewView)
             }
         }
 
@@ -176,27 +199,51 @@ class HomeFragment : Fragment() {
         overlayView.setResults(results)
     }
 
+    private fun processImage2(bitmap: Bitmap, imageView:ImageView ) {
+        val recognitions: ArrayList<Recognition> = yolov5TFLiteDetector!!.detect(bitmap)
+        val mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(mutableBitmap)
+
+        for (recognition in recognitions) {
+            if (recognition.getConfidence() > 0.4) {
+                val location: RectF = recognition.getLocation()
+                canvas.drawRect(location, boxPaint)
+                canvas.drawText(
+                    recognition.getLabelName() + ":" + recognition.getConfidence(),
+                    location.left,
+                    location.top,
+                    textPain
+                )
+            }
+        }
+
+        imageView.setImageBitmap(mutableBitmap)
+        //overlayView.setResults(results)
+    }
     private fun runModel(bitmap: Bitmap, imageView: ImageView): List<DetectionResult> {
         // Inference time is the difference between the system time at the start and finish of the
         // process
         var inferenceTime = SystemClock.uptimeMillis()
 
         // Preprocesar la imagen utilizando TensorImage e ImageProcessor
-        val tensorImage = TensorImage(DataType.UINT8)
+        val tensorImage = TensorImage.fromBitmap(bitmap)
+
         val imageProcessor = ImageProcessor.Builder()
-            .add(ResizeOp(300, 300, ResizeOp.ResizeMethod.BILINEAR))  // Adjust dimensions as needed
+            .add(ResizeOp(320, 320, ResizeOp.ResizeMethod.BILINEAR))
+            .add(NormalizeOp(0.0f, 255.0f))  // Normaliza los valores de píxeles al rango [0, 1]
             .build()
-        tensorImage.load(bitmap)
         val processedTensorImage = imageProcessor.process(tensorImage)
-        val inputBuffer = processedTensorImage
 
-        val outputs = model.process(inputBuffer)
-        val locations = outputs.locationsAsTensorBuffer.floatArray
-        val classes = outputs.classesAsTensorBuffer.floatArray
-        val scores = outputs.scoresAsTensorBuffer.floatArray
-        val numberOfDetections = outputs.numberOfDetectionsAsTensorBuffer.floatArray
+        val tensorBuffer = TensorBuffer.createFixedSize(intArrayOf(1, 320, 320, 3), DataType.FLOAT32)
+        tensorBuffer.loadBuffer(processedTensorImage.buffer)
 
-        var mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        val outputs = model.process(processedTensorImage.tensorBuffer)
+        val floatArrayBuffer = outputs.outputFeature0AsTensorBuffer.floatArray
+        // Número de detecciones
+        val outputSize = intArrayOf(1, 6300, 85);
+        val numDetections = floatArrayBuffer.size / 85
+
+        val mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
         inferenceTime = SystemClock.uptimeMillis() - inferenceTime
         // Obtener las dimensiones de la vista de la cámara
@@ -204,45 +251,52 @@ class HomeFragment : Fragment() {
         val previewHeight = mutable.height
 
         val results = parseResults(
-            locations,
-            classes,
-            scores,
+            floatArrayBuffer,
             previewWidth,
             previewHeight,
-            inferenceTime
+            inferenceTime,
+            outputSize
         )
-
-
         //Log.d(TAG, "Timesnap results: $inferenceTime")
         imageView.setImageBitmap(mutable)
         return (results)
     }
 
     private fun parseResults(
-        locations: FloatArray,
-        detectionClasses: FloatArray,
-        detectionScores: FloatArray,
+        floatArrayBuffer: FloatArray,
         previewWidth: Int,
         previewHeight: Int,
-        inferenceTime: Long
+        inferenceTime: Long,
+        outputSize: IntArray
     ): List<DetectionResult> {
         val detectionResults = mutableListOf<DetectionResult>()
         var box = 0
-        for (i in detectionScores.indices) {
-            val score = detectionScores[i]
-            // Solo procesar detecciones con puntaje significativo (> 0)
-            if (score > 0.60) {
-                box = i
-                box *= 4
-                    val top = locations[box] * previewHeight
-                    val left = locations[box+1] *previewWidth
-                    val bottom = locations[box+2] * previewHeight
-                    val right = locations[box+3] * previewWidth
+        for (i in 0 until outputSize[1]) {
+            val startIndex = i * 85
+            val endIndex = startIndex + 85
 
-                    val location = RectF(left, top, right, bottom)
-                    val category = associatedAxisLabels?.get(detectionClasses[i].toInt()) ?: "Unknown"
+            // Acceder a los datos de la detección actual
+            val detectionData = floatArrayBuffer.sliceArray(startIndex until endIndex)
+            // Aquí puedes interpretar los datos según la estructura de salida del modelo YOLOv5
 
-                    val detectionResult = DetectionResult(location, category, score, inferenceTime)
+            val confidence = detectionData[4]
+
+            if (confidence > 0.80) {
+                    val x = detectionData[0]* previewHeight
+                    val y = detectionData[1] *previewWidth
+                    val w = detectionData[2] * previewHeight
+                    val h = detectionData[3] * previewWidth
+
+                    val xmin = Math.max(0f, x - w / 2.0f)
+                    val ymin = Math.max(0f, y - h / 2.0f)
+                    val xmax = Math.min(previewWidth.toFloat(), x + w / 2.0f).toInt()
+                    val ymax = Math.min(previewHeight.toFloat(), y + h / 2.0f).toInt()
+
+                    val location = RectF(xmin, ymin, xmax.toFloat(), ymax.toFloat())
+                    val classIndex = detectionData[5].toInt()  // Índice de la clase detectada
+                    val className = associatedAxisLabels?.get(classIndex) ?: "Unknown"
+
+                    val detectionResult = DetectionResult(location, className, confidence, inferenceTime)
                     detectionResults.add(detectionResult)
             }
         }
