@@ -126,7 +126,7 @@ class HomeFragment : Fragment() {
         }
 
         yolov5TFLiteDetector = Yolov5TFLiteDetector()
-        yolov5TFLiteDetector!!.modelFile = "yolov5s-fp16.tflite"
+        yolov5TFLiteDetector!!.modelFile = "yolov5n-fp16.tflite"
         yolov5TFLiteDetector!!.initialModel(requireContext())
         boxPaint.strokeWidth = 5f
         boxPaint.style = Paint.Style.STROKE

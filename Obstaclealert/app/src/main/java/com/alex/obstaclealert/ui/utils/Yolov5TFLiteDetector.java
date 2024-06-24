@@ -95,7 +95,7 @@ public class Yolov5TFLiteDetector {
             // Crear el NnApiDelegate
 
             ByteBuffer tfliteModel = FileUtil.loadMappedFile(activity, MODEL_FILE);
-            addThread(10);
+            //addThread(10);
             addNNApiDelegate();
 
             tflite = new Interpreter(tfliteModel, options);
