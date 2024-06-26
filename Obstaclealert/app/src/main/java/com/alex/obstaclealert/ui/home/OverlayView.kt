@@ -34,7 +34,7 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             canvas.drawRect(result.location, paint)
 
             // Draw category and score
-            val text = "${result.category}: ${(result.score * 100).toInt()}%"
+            val text = "${result.category}: ${(result.score * 100).toInt()}% -- ${"%.2f".format(result.distancePredict)}m"
             canvas.drawText(text, result.location.left, result.location.top - 10, textPaint)
 
         }

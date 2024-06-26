@@ -10,12 +10,14 @@ import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
-import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.speech.tts.TextToSpeech
+import android.speech.tts.TextToSpeech.OnInitListener
+import android.speech.tts.Voice
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.Surface
@@ -31,6 +33,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import com.alex.obstaclealert.R
 import com.alex.obstaclealert.databinding.FragmentHomeBinding
+import com.alex.obstaclealert.ml.Model1
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.nnapi.NnApiDelegate
@@ -39,18 +42,15 @@ import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.IOException
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 
-import com.alex.obstaclealert.ml.Model1
 
 class HomeFragment : Fragment() {
 
     private var _binding: FragmentHomeBinding? = null
 
-    private var player: MediaPlayer? = null
-
     companion object {
-        private const val TAG = "CameraXDemo"
         private const val REQUEST_CODE_PERMISSIONS = 1001
         private val REQUIRED_PERMISSIONS =
             arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
@@ -64,20 +64,29 @@ class HomeFragment : Fragment() {
     lateinit var cameraDevice: CameraDevice
     private lateinit var interpreter: Interpreter
     private lateinit var cameraExecutor: ExecutorService
-    lateinit var cameraManager: CameraManager
-    lateinit var bitmap:Bitmap
+    private lateinit var cameraManager: CameraManager
+    lateinit var bitmap: Bitmap
 
     lateinit var handler: Handler
 
     private var associatedAxisLabels: List<String>? = null
 
-    var nnApiDelegate: NnApiDelegate? = null
+    private var nnApiDelegate: NnApiDelegate? = null
 
     private val requiredPermissions =
         arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
 
-    lateinit var model:Model1
+    private lateinit var model: Model1
+
+    private var tts: TextToSpeech? = null
     private val binding get() = _binding!!
+
+    private var statusCaptureView = false
+
+    private var lastDetectedObject: DetectedObject? = null
+    private val detectionCooldown = 5000 // Tiempo en milisegundos (2 segundos)
+    private val detectedObjects = mutableListOf<DetectedObject>()
+    private val lastDetectionTimes = mutableMapOf<String, Long>()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -95,16 +104,14 @@ class HomeFragment : Fragment() {
 
         overlayView = root.findViewById(R.id.overlay)
         buttonCapture = root.findViewById(R.id.button_capture)
+        statusCaptureView = false
 
-        if (allPermissionsGranted()) {
-            initializePlayer()
-        } else {
-            ActivityCompat.requestPermissions(
-                requireActivity(),
-                requiredPermissions,
-                REQUEST_CODE_PERMISSIONS
-            )
-        }
+        ActivityCompat.requestPermissions(
+            requireActivity(),
+            requiredPermissions,
+            REQUEST_CODE_PERMISSIONS
+        )
+
 
         val handlerThread = HandlerThread("videoThread")
         handlerThread.start()
@@ -113,12 +120,29 @@ class HomeFragment : Fragment() {
         buttonCapture.setOnClickListener {
             startCamera()
             initializeInterpreter()
+            statusCaptureView = true
+            convertTextToSpeech("La aplicacion iniciara en: 3. 2. 1. ")
         }
 
-        textureView.surfaceTextureListener = object:TextureView.SurfaceTextureListener{
+        tts?.let { setLanguageAndVoice(it) }
+        tts = TextToSpeech(
+            requireContext(),
+            OnInitListener { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    // TTS engine is successfully initialized.
+                    convertTextToSpeech("Benvenido, toque la pantalla para iniciar.")
+                } else {
+                    // Failed to initialize TTS engine.
+                }
+            })
+
+
+        textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(p0: SurfaceTexture, p1: Int, p2: Int) {
                 startCamera()
+                initializeInterpreter()
             }
+
             override fun onSurfaceTextureSizeChanged(p0: SurfaceTexture, p1: Int, p2: Int) {
             }
 
@@ -127,8 +151,11 @@ class HomeFragment : Fragment() {
             }
 
             override fun onSurfaceTextureUpdated(p0: SurfaceTexture) {
-                bitmap = textureView.bitmap!!
-                processImage(bitmap, previewView)
+                if (statusCaptureView) {
+                    bitmap = textureView.bitmap!!
+                    processImage(bitmap, previewView)
+                }
+
             }
         }
 
@@ -137,11 +164,20 @@ class HomeFragment : Fragment() {
         return root
     }
 
-    private fun initializePlayer() {
-        if (player == null) {
-            player = MediaPlayer.create(requireContext(), R.raw.initial_audio)
+    private fun setLanguageAndVoice(tts: TextToSpeech) {
+        val desiredLocale = Locale("es", "EC")// Change to the desired language/locale
+        tts.setLanguage(desiredLocale)
+
+        val voices = tts.voices
+        val voiceList: List<Voice> = ArrayList(voices)
+        val selectedVoice = voiceList[19] // Change to the desired voice index
+        tts.setVoice(selectedVoice)
+    }
+
+    private fun convertTextToSpeech(text: String) {
+        if (tts != null) {
+            tts!!.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
         }
-        player?.start()
     }
 
     private fun initializeInterpreter() {
@@ -171,7 +207,7 @@ class HomeFragment : Fragment() {
         ContextCompat.checkSelfPermission(requireContext(), it) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun processImage(bitmap: Bitmap, imageView:ImageView ) {
+    private fun processImage(bitmap: Bitmap, imageView: ImageView) {
         val results = runModel(bitmap, imageView)
         overlayView.setResults(results)
     }
@@ -188,30 +224,26 @@ class HomeFragment : Fragment() {
             .build()
         tensorImage.load(bitmap)
         val processedTensorImage = imageProcessor.process(tensorImage)
-        val inputBuffer = processedTensorImage
 
-        val outputs = model.process(inputBuffer)
+        val outputs = model.process(processedTensorImage)
         val locations = outputs.locationsAsTensorBuffer.floatArray
         val classes = outputs.classesAsTensorBuffer.floatArray
         val scores = outputs.scoresAsTensorBuffer.floatArray
         val numberOfDetections = outputs.numberOfDetectionsAsTensorBuffer.floatArray
 
-        var mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        val mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
         inferenceTime = SystemClock.uptimeMillis() - inferenceTime
         // Obtener las dimensiones de la vista de la cámara
-        val previewWidth = mutable.width
-        val previewHeight = mutable.height
 
         val results = parseResults(
             locations,
             classes,
             scores,
-            previewWidth,
-            previewHeight,
+            mutable.width,
+            mutable.height,
             inferenceTime
         )
-
 
         //Log.d(TAG, "Timesnap results: $inferenceTime")
         imageView.setImageBitmap(mutable)
@@ -228,33 +260,107 @@ class HomeFragment : Fragment() {
     ): List<DetectionResult> {
         val detectionResults = mutableListOf<DetectionResult>()
         var box = 0
+
         for (i in detectionScores.indices) {
             val score = detectionScores[i]
             // Solo procesar detecciones con puntaje significativo (> 0)
-            if (score > 0.60) {
+            if (score > 0.75) {
                 box = i
                 box *= 4
-                    val top = locations[box] * previewHeight
-                    val left = locations[box+1] *previewWidth
-                    val bottom = locations[box+2] * previewHeight
-                    val right = locations[box+3] * previewWidth
+                val top = locations[box] * previewHeight
+                val left = locations[box + 1] * previewWidth
+                val bottom = locations[box + 2] * previewHeight
+                val right = locations[box + 3] * previewWidth
 
-                    val location = RectF(left, top, right, bottom)
-                    val category = associatedAxisLabels?.get(detectionClasses[i].toInt()) ?: "Unknown"
+                // Calcular la distancia
+                val distancePredict = getDistancePredict(
+                    top, left, bottom, right,
+                    previewHeight.toFloat(), previewWidth.toFloat()
+                )
 
-                    val detectionResult = DetectionResult(location, category, score, inferenceTime)
-                    detectionResults.add(detectionResult)
+                val location = RectF(left, top, right, bottom)
+                val category = associatedAxisLabels?.get(detectionClasses[i].toInt()) ?: "Unknown"
+
+                val detectionResult =
+                    DetectionResult(location, category, score, inferenceTime, distancePredict)
+                detectionResults.add(detectionResult)
+                val detectionObj = DetectedObject(category, distancePredict, inferenceTime)
+                detectedObjects.add(detectionObj)
+                checkAndHandleDetection(category, distancePredict, inferenceTime)
             }
         }
         //Log.d(TAG, "Inference results: ${detectionResults.toString()}")
         return detectionResults
     }
 
+    private fun checkAndHandleDetection(category: String, distance: Float, timestamp: Long) {
+        val currentObject = DetectedObject(category, distance, timestamp)
+
+        if (lastDetectedObject == null || lastDetectedObject != currentObject) {
+            lastDetectedObject = currentObject
+            handleDetection(category, distance)
+        }
+    }
+
+    private fun handleDetection(category: String, distance: Float) {
+        val currentTime = System.currentTimeMillis()
+
+        // Verificar si ha pasado el tiempo de cooldown para la categoría detectada
+        val lastDetectionTime = lastDetectionTimes[category] ?: 0
+        if (currentTime - lastDetectionTime < detectionCooldown) {
+            return // No ha pasado suficiente tiempo, no hacer nada
+        }
+
+        val recentDetections = detectedObjects.filter {
+            currentTime - it.timestamp < detectionCooldown
+        }
+
+        val alreadyDetected = recentDetections.any {
+            it.category == category && it.distance == distance
+        }
+
+        if (!alreadyDetected) {
+            detectedObjects.add(DetectedObject(category, distance, currentTime))
+            convertTextToSpeech("$category a ${"%.2f".format(distance)} metros")
+
+            // Actualizar el tiempo de la última detección para la categoría
+            lastDetectionTimes[category] = currentTime
+
+            // Limpiar detecciones antiguas
+            detectedObjects.removeAll {
+                currentTime - it.timestamp >= detectionCooldown
+            }
+        }
+    }
+
+    private fun getDistancePredict(
+        top: Float, left: Float, bottom: Float, right: Float,
+        previewHeight: Float, previewWidth: Float
+    ): Float {
+        // Calcular las coordenadas del cuadro delimitador
+        val boxHeight = (bottom - top) * previewHeight
+
+        // Parámetros de la cámara (ajusta según tu dispositivo)
+        val realObjectHeight =
+            1.7f // Altura real del objeto en metros (por ejemplo, una persona de 1.7m)
+        val focalLength =
+            800f // Longitud focal de la cámara en píxeles (ajusta según tu dispositivo)
+
+        // Usar la altura del cuadro delimitador para calcular la distancia
+        val distance = (realObjectHeight * focalLength) / boxHeight
+        return distance * 1000
+    }
+
+    data class DetectedObject(
+        val category: String, val distance: Float, val timestamp: Long
+    )
+
     data class DetectionResult(
         val location: RectF,
         val category: String,
         val score: Float,
-        val elapsedTime: Long
+        val elapsedTime: Long,
+        val distancePredict: Float
     )
 
     override fun onRequestPermissionsResult(
@@ -280,40 +386,55 @@ class HomeFragment : Fragment() {
         super.onDestroy()
         closeInterpreter()
         cameraExecutor.shutdown()
+        if (tts != null) {
+            tts!!.stop();
+            tts!!.shutdown();
+            statusCaptureView = false;
+        }
     }
 
     @SuppressLint("MissingPermission")
-    fun startCamera(){
-        cameraManager.openCamera(cameraManager.cameraIdList[0], object: CameraDevice.StateCallback(){
-            override fun onOpened(p0: CameraDevice) {
-                cameraDevice = p0
+    fun startCamera() {
+        cameraManager.openCamera(
+            cameraManager.cameraIdList[0],
+            object : CameraDevice.StateCallback() {
+                override fun onOpened(p0: CameraDevice) {
+                    cameraDevice = p0
 
-                var surfaceTexture = textureView.surfaceTexture
-                var surface = Surface(surfaceTexture)
+                    var surfaceTexture = textureView.surfaceTexture
+                    var surface = Surface(surfaceTexture)
 
-                var captureRequest = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                captureRequest.addTarget(surface)
+                    var captureRequest =
+                        cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    captureRequest.addTarget(surface)
 
-                cameraDevice.createCaptureSession(listOf(surface), object: CameraCaptureSession.StateCallback(){
-                    override fun onConfigured(p0: CameraCaptureSession) {
-                        p0.setRepeatingRequest(captureRequest.build(), null, null)
-                    }
-                    override fun onConfigureFailed(p0: CameraCaptureSession) {
-                    }
-                }, handler)
-            }
+                    cameraDevice.createCaptureSession(
+                        listOf(surface),
+                        object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(p0: CameraCaptureSession) {
+                                p0.setRepeatingRequest(captureRequest.build(), null, null)
+                            }
 
-            override fun onDisconnected(p0: CameraDevice) {
+                            override fun onConfigureFailed(p0: CameraCaptureSession) {
+                            }
+                        },
+                        handler
+                    )
+                }
 
-            }
+                override fun onDisconnected(p0: CameraDevice) {
 
-            override fun onError(p0: CameraDevice, p1: Int) {
+                }
 
-            }
-        }, handler)
+                override fun onError(p0: CameraDevice, p1: Int) {
+
+                }
+            },
+            handler
+        )
     }
 
-    private fun closeInterpreter(){
+    private fun closeInterpreter() {
         nnApiDelegate?.close()
     }
 }
