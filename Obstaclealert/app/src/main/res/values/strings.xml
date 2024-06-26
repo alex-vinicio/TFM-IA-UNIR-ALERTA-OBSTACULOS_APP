@@ -1,15 +1,15 @@
 <resources>
     <string name="app_name">Obstacle alert</string>
-    <string name="navigation_drawer_open">Open navigation drawer</string>
-    <string name="navigation_drawer_close">Close navigation drawer</string>
-    <string name="nav_header_title">Android Studio</string>
-    <string name="nav_header_subtitle">android.studio@android.com</string>
+    <string name="navigation_drawer_open">Abrir navegador</string>
+    <string name="navigation_drawer_close">Cerrar navegador</string>
+    <string name="nav_header_title">Alerta de obstáculos</string>
+    <string name="nav_header_subtitle">alexandino2011@gmail.com</string>
     <string name="nav_header_desc">Navigation header</string>
     <string name="action_settings">Settings</string>
 
-    <string name="menu_home">Home</string>
-    <string name="menu_gallery">Gallery</string>
+    <string name="menu_home">Inicio</string>
+    <string name="menu_gallery">Información</string>
     <string name="menu_slideshow">Slideshow</string>
-    <string name="capture">Capture</string>
+    <string name="capture">Capturar</string>
     <string name="todo">TODO</string>
 </resources>

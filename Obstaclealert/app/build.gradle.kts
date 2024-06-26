@@ -64,4 +64,7 @@ dependencies {
     implementation ("org.tensorflow:tensorflow-lite-metadata:0.1.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.4.1")
+
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
 }

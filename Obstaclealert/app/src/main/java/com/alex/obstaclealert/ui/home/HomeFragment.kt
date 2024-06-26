@@ -62,7 +62,6 @@ class HomeFragment : Fragment() {
 
     private lateinit var buttonCapture: Button
     lateinit var cameraDevice: CameraDevice
-    private lateinit var interpreter: Interpreter
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var cameraManager: CameraManager
     lateinit var bitmap: Bitmap
@@ -391,6 +390,7 @@ class HomeFragment : Fragment() {
             tts!!.shutdown();
             statusCaptureView = false;
         }
+        model.close()
     }
 
     @SuppressLint("MissingPermission")

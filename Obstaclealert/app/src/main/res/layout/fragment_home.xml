@@ -9,44 +9,53 @@
 
     <TextureView
         android:id="@+id/textureView"
-        android:layout_width="412dp"
-        android:layout_height="633dp"
+        android:layout_width="414dp"
+        android:layout_height="624dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         tools:ignore="MissingConstraints"
-        tools:layout_editor_absoluteY="45dp" />
+        tools:layout_editor_absoluteY="50dp" />
 
     <ImageView
         android:id="@+id/imageView"
-        android:layout_width="412dp"
-        android:layout_height="633dp"
+        android:layout_width="410dp"
+        android:layout_height="625dp"
+        android:background="#000"
         android:contentDescription="@string/todo"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         tools:ignore="MissingConstraints"
-        android:background="#000"
-        tools:layout_editor_absoluteY="45dp" />
+        tools:layout_editor_absoluteY="51dp" />
 
     <com.alex.obstaclealert.ui.home.OverlayView
         android:id="@+id/overlay"
-        android:layout_width="418dp"
-        android:layout_height="546dp"
+        android:layout_width="410dp"
+        android:layout_height="625dp"
         android:background="@android:color/transparent"
         app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.0"
         app:layout_constraintStart_toStartOf="parent"
         tools:ignore="MissingConstraints"
-        tools:layout_editor_absoluteY="45dp" />
+        tools:layout_editor_absoluteY="50dp" />
 
     <Button
         android:id="@+id/button_capture"
         android:layout_width="409dp"
-        android:layout_height="48dp"
-        android:layout_marginTop="4dp"
+        android:layout_height="55dp"
         android:text="@string/capture"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontal_bias="0.5"
+        app:layout_constraintHorizontal_bias="0.0"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/imageView"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintVertical_bias="1.0"
         tools:ignore="MissingConstraints" />
+
+    <androidx.constraintlayout.widget.Barrier
+        android:id="@+id/barrier"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        app:barrierDirection="left"
+        app:constraint_referenced_ids="button_capture" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
