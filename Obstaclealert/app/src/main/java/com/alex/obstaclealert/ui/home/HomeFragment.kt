@@ -34,6 +34,15 @@ import androidx.lifecycle.ViewModelProvider
 import com.alex.obstaclealert.R
 import com.alex.obstaclealert.databinding.FragmentHomeBinding
 import com.alex.obstaclealert.ml.Model1
+import com.alex.obstaclealert.ui.information.GalleryFragment
+import com.alex.obstaclealert.ui.utils.ExtractDocument
+import com.alex.obstaclealert.ui.utils.RequestHttpLogs
+import com.alex.obstaclealert.ui.utils.RequestHttpUser
+import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.nnapi.NnApiDelegate
@@ -87,6 +96,10 @@ class HomeFragment : Fragment() {
     private val detectedObjects = mutableListOf<DetectedObject>()
     private val lastDetectionTimes = mutableMapOf<String, Long>()
 
+    private var extractDocument = ExtractDocument()
+    private var requestHttpLogs = RequestHttpLogs()
+    private var userId: String = ""
+    private val metadaLogs = mutableListOf<String>()
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -110,7 +123,7 @@ class HomeFragment : Fragment() {
             requiredPermissions,
             REQUEST_CODE_PERMISSIONS
         )
-
+        getUserId(requireContext(), "user_meta_data.json")
 
         val handlerThread = HandlerThread("videoThread")
         handlerThread.start()
@@ -120,7 +133,7 @@ class HomeFragment : Fragment() {
             startCamera()
             initializeInterpreter()
             statusCaptureView = true
-            convertTextToSpeech("La aplicacion iniciara en: 3. 2. 1. ")
+            convertTextToSpeech("La aplicación iniciara en: 3. 2. 1.")
         }
 
         tts?.let { setLanguageAndVoice(it) }
@@ -129,12 +142,11 @@ class HomeFragment : Fragment() {
             OnInitListener { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     // TTS engine is successfully initialized.
-                    convertTextToSpeech("Benvenido, toque la pantalla para iniciar.")
-                } else {
-                    // Failed to initialize TTS engine.
+                    convertTextToSpeech("Bienvenido, toque la pantalla para iniciar.")
                 }
             })
 
+        cameraManager = requireContext().getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
         textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(p0: SurfaceTexture, p1: Int, p2: Int) {
@@ -146,6 +158,8 @@ class HomeFragment : Fragment() {
             }
 
             override fun onSurfaceTextureDestroyed(p0: SurfaceTexture): Boolean {
+                //Log.d(tag, "Aqui se cierra la camara")
+                setMetadataField(requireContext())
                 return false
             }
 
@@ -157,8 +171,6 @@ class HomeFragment : Fragment() {
 
             }
         }
-
-        cameraManager = requireContext().getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
         return root
     }
@@ -228,13 +240,12 @@ class HomeFragment : Fragment() {
         val locations = outputs.locationsAsTensorBuffer.floatArray
         val classes = outputs.classesAsTensorBuffer.floatArray
         val scores = outputs.scoresAsTensorBuffer.floatArray
-        val numberOfDetections = outputs.numberOfDetectionsAsTensorBuffer.floatArray
 
         val mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
         inferenceTime = SystemClock.uptimeMillis() - inferenceTime
         // Obtener las dimensiones de la vista de la cámara
-
+        Log.d(tag, "Timesnap results: $inferenceTime")
         val results = parseResults(
             locations,
             classes,
@@ -244,7 +255,6 @@ class HomeFragment : Fragment() {
             inferenceTime
         )
 
-        //Log.d(TAG, "Timesnap results: $inferenceTime")
         imageView.setImageBitmap(mutable)
         return (results)
     }
@@ -297,11 +307,11 @@ class HomeFragment : Fragment() {
 
         if (lastDetectedObject == null || lastDetectedObject != currentObject) {
             lastDetectedObject = currentObject
-            handleDetection(category, distance)
+            handleDetection(category, distance, timestamp)
         }
     }
 
-    private fun handleDetection(category: String, distance: Float) {
+    private fun handleDetection(category: String, distance: Float, timestamp: Long) {
         val currentTime = System.currentTimeMillis()
 
         // Verificar si ha pasado el tiempo de cooldown para la categoría detectada
@@ -321,7 +331,8 @@ class HomeFragment : Fragment() {
         if (!alreadyDetected) {
             detectedObjects.add(DetectedObject(category, distance, currentTime))
             convertTextToSpeech("$category a ${"%.2f".format(distance)} metros")
-
+            // Crea el metadata
+            metadaLogs.add(setMetadataLogs(category, distance, timestamp))
             // Actualizar el tiempo de la última detección para la categoría
             lastDetectionTimes[category] = currentTime
 
@@ -330,6 +341,10 @@ class HomeFragment : Fragment() {
                 currentTime - it.timestamp >= detectionCooldown
             }
         }
+    }
+
+    private fun setMetadataLogs(category: String, distance: Float, currentTime: Long): String {
+        return "${category}|${"%.2f".format(distance)}m|${currentTime}ms"
     }
 
     private fun getDistancePredict(
@@ -393,6 +408,13 @@ class HomeFragment : Fragment() {
         model.close()
     }
 
+    private fun setMetadataField(context: Context) {
+        val jsonObject = JSONObject()
+        jsonObject.put("logs", metadaLogs.toString().replace("[", "").replace("]", ""))
+
+        extractDocument.saveJsonToFile(context, "metadata_logs.json", jsonObject)
+    }
+
     @SuppressLint("MissingPermission")
     fun startCamera() {
         cameraManager.openCamera(
@@ -432,6 +454,88 @@ class HomeFragment : Fragment() {
             },
             handler
         )
+    }
+
+    // Función para mostrar Snackbar
+    private fun showSnackbar(message: String) {
+        view?.let { Snackbar.make(it, message, Snackbar.LENGTH_LONG).show() }
+    }
+
+    private fun getUserId(context: Context, fileName: String) {
+        if (!extractDocument.isJsonFileEmpty(context, fileName)) {
+            val jsonObject = extractDocument.getJsonFileContent(context, fileName)
+            jsonObject?.let {
+                userId = it.getString("user")
+            }
+
+            var metadaField = ""
+            if (!extractDocument.isJsonFileEmpty(context, "metadata_logs.json")) {
+                val jsonObjectLogs =
+                    extractDocument.getJsonFileContent(context, "metadata_logs.json")
+                jsonObjectLogs?.let {
+                    metadaField = it.getString("logs")
+                }
+
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val logRequest = mutableListOf<RequestHttpLogs.LogsRequest>()
+                        logRequest.add(
+                            RequestHttpLogs.LogsRequest(
+                                userId,
+                                extractDocument.getCurrentDateTime(),
+                                extractDocument.getCurrentDateTime(),
+                                "complete",
+                                "SSD MobileNetV1",
+                                metadaField
+                            )
+                        )
+                        val response = RequestHttpLogs.RetrofitInstance.api.postData(logRequest)
+                        if (response.isSuccessful) {
+                            val data = response.body()
+                            if (data != null) {
+                                showSnackbar("Consulta exitosa: ${data.message}")
+                            } else {
+                                showSnackbar("Consulta exitosa: ${response.code()}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        userId = ""
+                        showSnackbar("Consulta exitosa: ${e.message}")
+                    }
+                }
+            }
+        } else {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val userRequest = RequestHttpUser.UserRequest(
+                        "active",
+                        extractDocument.getInstallationId(requireContext())
+                    )
+                    val response = RequestHttpUser.RetrofitInstance.api.postData(userRequest)
+                    if (response.isSuccessful) {
+                        val data = response.body()
+                        // Guardar datos en un archivo JSON en el dispositivo
+                        val jsonObject = JSONObject()
+                        if (data != null) {
+                            jsonObject.put("user", data.user)
+                            jsonObject.put("message", data.message)
+                            jsonObject.put("status", userRequest.status)
+                            jsonObject.put("name", userRequest.name)
+                            userId = data.user
+                        } else {
+                            jsonObject.put("user", "")
+                            jsonObject.put("message", "")
+                            jsonObject.put("status", "")
+                            jsonObject.put("name", "")
+                        }
+                        extractDocument.saveJsonToFile(context, fileName, jsonObject)
+                    }
+                } catch (e: Exception) {
+                    userId = ""
+                    showSnackbar("Consulta exitosa: ${e.message}")
+                }
+            }
+        }
     }
 
     private fun closeInterpreter() {
